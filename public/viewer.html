@@ -28,7 +28,17 @@
   .badge.live .dot { background: #e24b4a; animation: pulse 1.2s infinite; }
   .badge.connecting { background: rgba(255,184,77,0.15); color: #ffb84d; border: 0.5px solid rgba(255,184,77,0.3); }
   .badge.connecting .dot { background: #ffb84d; animation: pulse 1.2s infinite; }
+  .badge.tracking { background: rgba(93,202,165,0.15); color: #5dcaa5; border: 0.5px solid rgba(93,202,165,0.3); }
+  .badge.tracking .dot { background: #5dcaa5; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+  .bb-btn.active {
+    background: rgba(93,202,165,0.3);
+    border-color: rgba(93,202,165,0.6);
+    color: #fff;
+  }
+  .bb-btn.active:hover { background: rgba(93,202,165,0.4); }
+  .bb-btn.loading { opacity: 0.6; cursor: wait; }
 
   #main { flex: 1; position: relative; overflow: hidden; }
   canvas { display: block; width: 100%; height: 100%; cursor: grab; }
@@ -92,6 +102,7 @@
   <div class="right">
     <div class="badge connecting" id="badge-conn"><span class="dot"></span>CONNEXION</div>
     <div class="badge live" id="badge-live"><span class="dot"></span>LIVE</div>
+    <div class="badge tracking" id="badge-track"><span class="dot"></span><span id="track-count">0</span> personne<span id="track-plural">s</span></div>
   </div>
 </div>
 
@@ -108,6 +119,7 @@
 
   <div id="bottombar">
     <button class="bb-btn" id="btn-center">Centrer</button>
+    <button class="bb-btn" id="btn-track" title="Suivi automatique des personnes">Suivi auto</button>
     <button class="bb-btn" id="btn-fs">Plein écran</button>
     <div id="fov-group">
       <label>Zoom</label>
@@ -129,8 +141,12 @@
   const btnJoin   = document.getElementById('btn-join')
   const badgeConn = document.getElementById('badge-conn')
   const badgeLive = document.getElementById('badge-live')
+  const badgeTrack= document.getElementById('badge-track')
+  const trackCount= document.getElementById('track-count')
+  const trackPlural=document.getElementById('track-plural')
   const bottombar = document.getElementById('bottombar')
   const btnCenter = document.getElementById('btn-center')
+  const btnTrack  = document.getElementById('btn-track')
   const btnFs     = document.getElementById('btn-fs')
   const fovRange  = document.getElementById('fov')
   const fovValEl  = document.getElementById('fov-val')
@@ -141,6 +157,18 @@
   let fov = 75
   let peer = null, call = null
   let streamReceived = false
+
+  // ── Tracking auto-framing ───────────────────────────────────────────────
+  let trackingEnabled  = false
+  let detector         = null
+  let detectorLoading  = false
+  let lastDetectTime   = 0
+  const DETECT_INTERVAL_MS = 100             // 10 FPS de détection (vidéo reste à 60 FPS)
+  let targetLon = 0, targetLat = 0
+  let hasTarget = false                       // false tant qu'aucune détection valide
+  let userOverrideUntil = 0                   // timestamp ms : suivi en pause jusqu'à cette date
+  const OVERRIDE_DURATION_MS = 3000           // 3s après un drag, on reprend le suivi
+  const LERP_FACTOR = 0.06                    // vitesse de rapprochement (0..1) — plus haut = plus rapide
 
   // ICE servers : STUN Google + TURN public openrelay (relais NAT)
   const ICE_SERVERS = [
@@ -197,9 +225,24 @@
     camera.updateProjectionMatrix()
   }
 
+  // Lerp angulaire avec wrap 360° (chemin le plus court)
+  function lerpAngleDeg (current, target, factor) {
+    let delta = target - current
+    while (delta > 180)  delta -= 360
+    while (delta < -180) delta += 360
+    return current + delta * factor
+  }
+
   function renderLoop () {
     requestAnimationFrame(renderLoop)
     if (videoTex) videoTex.needsUpdate = true
+
+    // Auto-framing : si activé, qu'on a une cible, et pas de drag récent → lerp vers cible
+    if (trackingEnabled && hasTarget && !isDragging && performance.now() > userOverrideUntil) {
+      lon = lerpAngleDeg(lon, targetLon, LERP_FACTOR)
+      lat = lat + (targetLat - lat) * LERP_FACTOR
+    }
+
     lat = Math.max(-85, Math.min(85, lat))
     const phi = THREE.MathUtils.degToRad(90 - lat)
     const theta = THREE.MathUtils.degToRad(lon)
@@ -211,6 +254,7 @@
     canvas.addEventListener('mousedown', e => {
       isDragging = true; prevX = e.clientX; prevY = e.clientY
       canvas.classList.add('grabbing')
+      userOverrideUntil = performance.now() + OVERRIDE_DURATION_MS
     })
     window.addEventListener('mousemove', e => {
       if (!isDragging) return
@@ -223,6 +267,7 @@
     canvas.addEventListener('touchstart', e => {
       if (e.touches.length !== 1) return
       isDragging = true; prevX = e.touches[0].clientX; prevY = e.touches[0].clientY
+      userOverrideUntil = performance.now() + OVERRIDE_DURATION_MS
     }, { passive: true })
     canvas.addEventListener('touchmove', e => {
       if (!isDragging || e.touches.length !== 1) return
@@ -371,6 +416,131 @@
   idInput.addEventListener('keydown', e => { if (e.key === 'Enter') btnJoin.click() })
 
   if (urlId) setTimeout(() => btnJoin.click(), 300)
+
+  // ── Object detector (MediaPipe Tasks Vision) ──────────────────────────────
+  // Chargement paresseux : seulement au premier clic "Suivi auto"
+  async function loadDetector () {
+    if (detector || detectorLoading) return detector
+    detectorLoading = true
+    btnTrack.classList.add('loading')
+    btnTrack.textContent = 'Chargement…'
+    try {
+      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs')
+      const fileset = await vision.FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+      )
+      detector = await vision.ObjectDetector.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
+          delegate: 'GPU'
+        },
+        scoreThreshold: 0.45,
+        maxResults: 5,
+        categoryAllowlist: ['person'],
+        runningMode: 'VIDEO'
+      })
+      console.log('[viewer] detector loaded')
+    } catch (e) {
+      console.error('[viewer] detector load failed:', e)
+      detector = null
+    } finally {
+      detectorLoading = false
+      btnTrack.classList.remove('loading')
+    }
+    return detector
+  }
+
+  // Conversion pixel équirectangulaire → angles sphère (lon, lat en degrés)
+  // Mapping Three.js SphereGeometry r128 (scale -1,1,1) avec notre convention camera :
+  //   lon = u * 360 - 180   (u=0 ↔ ±180°, u=0.5 ↔ 0°)
+  //   lat = 90 - v * 180    (v=0 ↔ +90°, v=1 ↔ -90°)
+  // Mais notre lon=0 pointe vers +X qui correspond à u=0 du texture → décale de 180°.
+  function pixelToSpherical (u, v) {
+    let lon = ((u * 360) + 180) % 360 - 180   // wrap dans (-180, 180]
+    if (lon === -180) lon = 180
+    const lat = 90 - v * 180
+    return { lon, lat }
+  }
+
+  function updatePersonCountUI (n) {
+    trackCount.textContent = n
+    trackPlural.style.display = n > 1 ? '' : 'none'
+    if (trackingEnabled) badgeTrack.classList.add('on')
+  }
+
+  function detectLoop () {
+    if (!trackingEnabled) return
+    requestAnimationFrame(detectLoop)
+    if (!detector || !videoEl || videoEl.readyState < 2 || !videoEl.videoWidth) return
+
+    const now = performance.now()
+    if (now - lastDetectTime < DETECT_INTERVAL_MS) return
+    lastDetectTime = now
+
+    let result
+    try {
+      result = detector.detectForVideo(videoEl, now)
+    } catch (e) {
+      // Erreur ponctuelle, on saute cette frame
+      return
+    }
+    const persons = (result && result.detections) || []
+    updatePersonCountUI(persons.length)
+
+    if (persons.length === 0) {
+      // Pas de détection → on garde la dernière cible mais on n'update plus
+      // (hasTarget reste à sa valeur précédente)
+      return
+    }
+
+    // Centroïde pondéré par la confiance des détections
+    const W = videoEl.videoWidth
+    const H = videoEl.videoHeight
+    let sumX = 0, sumY = 0, wSum = 0
+    for (const d of persons) {
+      const bb = d.boundingBox
+      const w = (d.categories && d.categories[0]) ? d.categories[0].score : 1
+      sumX += (bb.originX + bb.width / 2) * w
+      sumY += (bb.originY + bb.height / 2) * w
+      wSum += w
+    }
+    const cx = sumX / wSum
+    const cy = sumY / wSum
+
+    const t = pixelToSpherical(cx / W, cy / H)
+    targetLon = t.lon
+    targetLat = t.lat
+    hasTarget = true
+  }
+
+  // Toggle bouton "Suivi auto"
+  btnTrack.addEventListener('click', async () => {
+    if (detectorLoading) return
+    if (trackingEnabled) {
+      // Désactiver
+      trackingEnabled = false
+      hasTarget = false
+      btnTrack.classList.remove('active')
+      btnTrack.textContent = 'Suivi auto'
+      badgeTrack.classList.remove('on')
+      return
+    }
+    // Activer (lazy load au premier clic)
+    if (!detector) {
+      await loadDetector()
+      if (!detector) {
+        btnTrack.textContent = 'Suivi indispo'
+        setTimeout(() => { btnTrack.textContent = 'Suivi auto' }, 2500)
+        return
+      }
+    }
+    trackingEnabled = true
+    btnTrack.classList.add('active')
+    btnTrack.textContent = 'Suivi auto ✓'
+    badgeTrack.classList.add('on')
+    updatePersonCountUI(0)
+    detectLoop()
+  })
 })()
 </script>
 </body>
