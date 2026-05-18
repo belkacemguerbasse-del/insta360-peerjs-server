@@ -120,6 +120,9 @@
   <div id="bottombar">
     <button class="bb-btn" id="btn-center">Centrer</button>
     <button class="bb-btn" id="btn-track" title="Suivi automatique des personnes">Suivi auto</button>
+    <button class="bb-btn" id="btn-vr" title="Mode VR (casque)" style="display:none">
+      <svg viewBox="0 0 24 24" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;fill:none;stroke:currentColor;stroke-width:2"><rect x="2" y="7" width="20" height="10" rx="2"/><circle cx="7.5" cy="12" r="1.5"/><circle cx="16.5" cy="12" r="1.5"/></svg>VR
+    </button>
     <button class="bb-btn" id="btn-fs">Plein écran</button>
     <div id="fov-group">
       <label>Zoom</label>
@@ -147,6 +150,7 @@
   const bottombar = document.getElementById('bottombar')
   const btnCenter = document.getElementById('btn-center')
   const btnTrack  = document.getElementById('btn-track')
+  const btnVR     = document.getElementById('btn-vr')
   const btnFs     = document.getElementById('btn-fs')
   const fovRange  = document.getElementById('fov')
   const fovValEl  = document.getElementById('fov-val')
@@ -195,6 +199,7 @@
     renderer.setPixelRatio(window.devicePixelRatio)
     renderer.setSize(w, h)
     renderer.setClearColor(0x0a0a0f)
+    renderer.xr.enabled = true       // active le rendu stéréo WebXR
     scene  = new THREE.Scene()
     camera = new THREE.PerspectiveCamera(fov, w / h, 0.1, 2000)
     camera.position.set(0, 0, 0.001)
@@ -214,7 +219,10 @@
 
     window.addEventListener('resize', onResize)
     attachControls()
-    renderLoop()
+    // setAnimationLoop est nécessaire pour WebXR (synchronisation avec le vsync du casque)
+    renderer.setAnimationLoop(renderLoop)
+    // Détection du support WebXR pour afficher le bouton
+    setupVR()
   }
 
   function onResize () {
@@ -234,19 +242,20 @@
   }
 
   function renderLoop () {
-    requestAnimationFrame(renderLoop)
     if (videoTex) videoTex.needsUpdate = true
 
-    // Auto-framing : si activé, qu'on a une cible, et pas de drag récent → lerp vers cible
-    if (trackingEnabled && hasTarget && !isDragging && performance.now() > userOverrideUntil) {
-      lon = lerpAngleDeg(lon, targetLon, LERP_FACTOR)
-      lat = lat + (targetLat - lat) * LERP_FACTOR
+    // En mode VR le casque pilote la caméra → on ne touche pas à lookAt/tracking.
+    // Hors VR : auto-framing + lookAt manuel comme avant.
+    if (!renderer.xr.isPresenting) {
+      if (trackingEnabled && hasTarget && !isDragging && performance.now() > userOverrideUntil) {
+        lon = lerpAngleDeg(lon, targetLon, LERP_FACTOR)
+        lat = lat + (targetLat - lat) * LERP_FACTOR
+      }
+      lat = Math.max(-85, Math.min(85, lat))
+      const phi = THREE.MathUtils.degToRad(90 - lat)
+      const theta = THREE.MathUtils.degToRad(lon)
+      camera.lookAt(Math.sin(phi)*Math.cos(theta), Math.cos(phi), Math.sin(phi)*Math.sin(theta))
     }
-
-    lat = Math.max(-85, Math.min(85, lat))
-    const phi = THREE.MathUtils.degToRad(90 - lat)
-    const theta = THREE.MathUtils.degToRad(lon)
-    camera.lookAt(Math.sin(phi)*Math.cos(theta), Math.cos(phi), Math.sin(phi)*Math.sin(theta))
     renderer.render(scene, camera)
   }
 
@@ -512,6 +521,58 @@
     targetLat = t.lat
     hasTarget = true
   }
+
+  // ── WebXR / Mode VR ────────────────────────────────────────────────────────
+  let vrSession = null
+
+  async function setupVR () {
+    if (!('xr' in navigator) || !navigator.xr.isSessionSupported) {
+      console.log('[viewer] WebXR non supporté par ce navigateur')
+      return
+    }
+    try {
+      const supported = await navigator.xr.isSessionSupported('immersive-vr')
+      if (!supported) {
+        console.log('[viewer] casque VR non détecté ou immersive-vr indispo')
+        return
+      }
+    } catch (e) {
+      console.warn('[viewer] check VR support failed', e)
+      return
+    }
+    btnVR.style.display = ''   // affiche le bouton
+    console.log('[viewer] WebXR détecté, bouton VR disponible')
+  }
+
+  btnVR.addEventListener('click', async () => {
+    if (vrSession) {
+      // Sortir de VR
+      try { await vrSession.end() } catch (_) {}
+      return
+    }
+    try {
+      const session = await navigator.xr.requestSession('immersive-vr', {
+        optionalFeatures: ['local-floor', 'bounded-floor']
+      })
+      await renderer.xr.setSession(session)
+      vrSession = session
+      btnVR.classList.add('active')
+      btnVR.title = 'Sortir du mode VR'
+
+      session.addEventListener('end', () => {
+        vrSession = null
+        btnVR.classList.remove('active')
+        btnVR.title = 'Mode VR (casque)'
+        // recadrage doux après sortie
+        onResize()
+      })
+      console.log('[viewer] session VR démarrée')
+    } catch (e) {
+      console.error('[viewer] VR session failed:', e)
+      const oldText = btnVR.querySelector('svg') ? null : btnVR.textContent
+      btnVR.title = 'VR indisponible : ' + e.message
+    }
+  })
 
   // Toggle bouton "Suivi auto"
   btnTrack.addEventListener('click', async () => {
