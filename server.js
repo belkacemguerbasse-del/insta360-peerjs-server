@@ -34,8 +34,6 @@ const peerServer = ExpressPeerServer(server, {
   path: '/',
   proxied: true,            // derrière le reverse proxy Hostinger (nginx)
   allow_discovery: false,
-  alive_timeout: 15000,     // ping clients toutes les 15s pour détecter les morts (défaut 60s)
-  expire_timeout: 5000,     // cleanup des clients morts (défaut 5s)
 })
 
 peerServer.on('connection', client => {
