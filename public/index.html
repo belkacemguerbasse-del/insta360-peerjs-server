@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Insta360 360° Live</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: radial-gradient(ellipse at top, #1a1a2e 0%, #0a0a0f 70%);
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden;
+  }
+  body {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 24px;
+  }
+
+  .icon {
+    width: 96px; height: 96px;
+    border-radius: 24px;
+    background: rgba(93,202,165,0.1);
+    border: 1px solid rgba(93,202,165,0.3);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 24px;
+    box-shadow: 0 8px 32px rgba(93,202,165,0.15);
+  }
+  .icon svg { width: 48px; height: 48px; stroke: #5dcaa5; fill: none; stroke-width: 1.5; }
+
+  h1 {
+    font-size: 26px; font-weight: 600; letter-spacing: -0.5px;
+    margin-bottom: 6px;
+  }
+  h1 .accent { color: #5dcaa5; }
+  .tagline {
+    font-size: 13px; color: rgba(255,255,255,0.5);
+    margin-bottom: 36px; text-align: center;
+    max-width: 360px; line-height: 1.6;
+  }
+
+  .card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 24px;
+    width: 100%; max-width: 400px;
+    backdrop-filter: blur(10px);
+  }
+
+  label {
+    display: block;
+    font-size: 10px; color: rgba(255,255,255,0.45);
+    text-transform: uppercase; letter-spacing: 0.8px;
+    margin-bottom: 8px;
+  }
+  input {
+    width: 100%;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    color: #fff;
+    font-size: 14px;
+    padding: 11px 14px;
+    outline: none;
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    text-align: center;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  input:focus { border-color: #5dcaa5; background: rgba(255,255,255,0.08); }
+  input::placeholder { color: rgba(255,255,255,0.25); }
+
+  button {
+    width: 100%;
+    background: #1d9e75;
+    border: none; border-radius: 8px;
+    color: #fff;
+    font-size: 14px; font-weight: 500;
+    padding: 11px;
+    cursor: pointer;
+    margin-top: 14px;
+    transition: background 0.15s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  button:hover { background: #16805e; }
+  button svg { width: 16px; height: 16px; stroke: #fff; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .error {
+    display: none;
+    font-size: 11px; color: #f09595;
+    background: rgba(226,75,74,0.12);
+    border: 1px solid rgba(226,75,74,0.3);
+    border-radius: 6px;
+    padding: 7px 12px;
+    margin-top: 12px;
+    text-align: center;
+  }
+  .error.on { display: block; }
+
+  footer {
+    margin-top: 28px;
+    font-size: 11px; color: rgba(255,255,255,0.3);
+    text-align: center;
+    max-width: 400px; line-height: 1.6;
+  }
+  footer a { color: rgba(93,202,165,0.6); text-decoration: none; }
+  footer a:hover { color: #5dcaa5; }
+</style>
+</head>
+<body>
+
+<div class="icon">
+  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a9 9 0 010 18M12 3c-2.5 2.5-4 5.5-4 9s1.5 6.5 4 9M12 3c2.5 2.5 4 5.5 4 9s-1.5 6.5-4 9"/></svg>
+</div>
+
+<h1>Insta360 <span class="accent">360°</span> Live</h1>
+<p class="tagline">Rejoins une diffusion 360° en direct. Entre l'ID de session que t'a partagé le diffuseur.</p>
+
+<div class="card">
+  <label for="id-input">ID de session</label>
+  <input id="id-input" type="text" placeholder="x5-xxxxxx" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+  <button id="btn-join">
+    <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    Rejoindre le live
+  </button>
+  <div class="error" id="err">Entre un ID valide (ex: x5-abc123)</div>
+</div>
+
+<footer>
+  Diffusion P2P chiffrée via WebRTC. Aucune donnée n'est stockée.<br>
+  <a href="/health" target="_blank">Statut serveur</a>
+</footer>
+
+<script>
+  const input = document.getElementById('id-input')
+  const btn   = document.getElementById('btn-join')
+  const err   = document.getElementById('err')
+
+  function join () {
+    const id = input.value.trim()
+    if (!id || !/^[a-zA-Z0-9_-]{3,}$/.test(id)) {
+      err.classList.add('on')
+      input.focus()
+      return
+    }
+    location.href = '/viewer.html?id=' + encodeURIComponent(id)
+  }
+
+  btn.addEventListener('click', join)
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') join() })
+  input.addEventListener('input', () => err.classList.remove('on'))
+
+  // Auto-focus
+  input.focus()
+
+  // Si déjà un ?id= en URL, redirige direct
+  const urlId = new URLSearchParams(location.search).get('id')
+  if (urlId) location.href = '/viewer.html?id=' + encodeURIComponent(urlId)
+</script>
+
+</body>
+</html>
